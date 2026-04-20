@@ -24,7 +24,7 @@ support_resistance:
   include_52wk_levels: true   # inject 52-week H/L as synthetic high-score zones
 
 fundamentals:
-  min_score: 60
+  min_score: 50
 
 backtest:
   lookback_years: 2
