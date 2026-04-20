@@ -31,8 +31,12 @@ log = logging.getLogger("scanner")
 # ---------------------------------------------------------------------------
 
 def load_config(path: str = "config.yaml") -> dict:
+    import re
     with open(path) as f:
-        return yaml.safe_load(f)
+        raw = f.read()
+    # Replace ${VAR_NAME} placeholders with environment variable values
+    raw = re.sub(r"\$\{(\w+)\}", lambda m: os.environ.get(m.group(1), ""), raw)
+    return yaml.safe_load(raw)
 
 
 # ---------------------------------------------------------------------------
