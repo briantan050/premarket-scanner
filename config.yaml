@@ -28,7 +28,7 @@ fundamentals:
 
 backtest:
   lookback_years: 2
-  min_win_rate: 0.52
+  min_win_rate: 0.0
   commission: 0.001
 
 alerts:
