@@ -10,6 +10,11 @@ on:
         required: false
         type: string
 
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
 jobs:
   scan:
     runs-on: ubuntu-latest
@@ -36,7 +41,7 @@ jobs:
         run: python scanner/main.py ${{ inputs.ticker && format('--ticker {0}', inputs.ticker) || '' }}
 
       - name: Deploy charts to GitHub Pages
-        uses: peaceiris/actions-gh-pages@v4
+        uses: peaceiris/actions-gh-pages@v3
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           publish_dir: ./charts
