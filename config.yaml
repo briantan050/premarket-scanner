@@ -1,0 +1,48 @@
+scan:
+  volume_multiplier: 2.0
+  min_price: 10.00
+  max_results: 50
+
+support_resistance:
+  min_touches: 3
+  proximity_threshold: 1.5
+  merge_distance: 0.8
+  timeframes:
+    - interval: "1mo"
+      weight: 5
+    - interval: "1wk"
+      weight: 3
+    - interval: "1d"
+      weight: 2
+    - interval: "4h"
+      weight: 1
+  major_level_min_score: 6
+  flip_confirmation: true
+  # Chart display filters — applied after scoring
+  chart_proximity_pct: 6.0    # only show zones within this % of current price
+  max_zones_on_chart: 6       # cap total lines to reduce visual clutter
+  include_52wk_levels: true   # inject 52-week H/L as synthetic high-score zones
+
+fundamentals:
+  min_score: 60
+
+backtest:
+  lookback_years: 2
+  min_win_rate: 0.52
+  commission: 0.001
+
+alerts:
+  cooldown_minutes: 15
+  send_if_no_setups: false
+
+telegram:
+  bot_token: "${TELEGRAM_BOT_TOKEN}"
+  chat_id: "${TELEGRAM_CHAT_ID}"
+
+google_sheets:
+  spreadsheet_id: "${GOOGLE_SHEETS_ID}"
+  worksheet_name: "Trades"
+
+claude_api:
+  model: "claude-haiku-4-5-20251001"
+  max_tokens: 400

@@ -1,0 +1,11 @@
+tvscreener
+yfinance
+backtesting
+gspread
+google-auth
+python-telegram-bot>=20.0
+anthropic
+pyyaml
+pandas
+numpy
+requests

@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+  <title>__TICKER__ chart</title>
+  <script src="https://unpkg.com/lightweight-charts@5/dist/lightweight-charts.standalone.production.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body   { background: #0d0d0d; color: #c9d1d9; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+
+    /* ── Header ── */
+    #header { display: flex; align-items: center; gap: 20px; padding: 8px 14px; background: #161b22; border-bottom: 1px solid #30363d; flex-shrink: 0; flex-wrap: wrap; }
+    #header h1 { font-size: 1.05rem; font-weight: 700; color: #fff; }
+    .pill    { font-size: 0.75rem; padding: 2px 8px; border-radius: 12px; background: #21262d; color: #c9d1d9; white-space: nowrap; }
+    .pill.green  { background: #0f3325; color: #39d353; }
+    .pill.red    { background: #3c1414; color: #ef5350; }
+    .pill.yellow { background: #2d2500; color: #d29922; }
+    .pill.blue   { background: #0c2a52; color: #58a6ff; }
+
+    /* ── Chart containers ── */
+    #main-chart { flex: 1 1 auto; min-height: 0; }
+    #rsi-chart  { flex: 0 0 110px; border-top: 1px solid #30363d; }
+
+    /* ── Legend overlay ── */
+    #legend { position: absolute; top: 46px; left: 10px; pointer-events: none; font-size: 0.7rem; color: #8b949e; z-index: 10; }
+    #legend span { margin-right: 10px; }
+    #rsi-label  { position: absolute; font-size: 0.68rem; color: #8b949e; pointer-events: none; }
+  </style>
+</head>
+<body>
+
+<div id="header">
+  <h1 id="h-ticker">—</h1>
+  <span class="pill blue"  id="h-date">—</span>
+  <span class="pill"       id="h-price">—</span>
+  <span class="pill yellow" id="h-zone">—</span>
+  <span class="pill green" id="h-tp1">—</span>
+  <span class="pill green" id="h-tp2">—</span>
+  <span class="pill red"   id="h-stop">—</span>
+  <span class="pill"       id="h-wr">—</span>
+  <span class="pill"       id="h-fscore">—</span>
+</div>
+
+<div style="position:relative; flex:1 1 auto; min-height:0; display:flex; flex-direction:column;">
+  <div id="legend"><span id="leg-ema20" style="color:#f0b429">EMA20</span><span id="leg-ema50" style="color:#a78bfa">EMA50</span></div>
+  <div id="main-chart"></div>
+  <div id="rsi-chart"></div>
+  <div id="rsi-label"></div>
+</div>
+
+<script>
+(function () {
+  // ── Data injected by chart.py ──
+  const D = __DATA_JSON__;
+
+  const { ticker, date, current_price, ohlcv, volume, ema20, ema50, rsi,
+          zones, stats, trade, tp1, tp2, stop } = D;
+
+  // ── Header ──
+  document.title = `${ticker} — ${date}`;
+  document.getElementById('h-ticker').textContent = ticker;
+  document.getElementById('h-date').textContent   = date;
+  document.getElementById('h-price').textContent  = `$${current_price.toFixed(2)}`;
+
+  const bestZone = zones.sort((a,b) => b.score - a.score)[0];
+  if (bestZone) {
+    const flip = bestZone.flipped ? ' ↔ flipped' : '';
+    document.getElementById('h-zone').textContent =
+      `Level $${bestZone.price.toFixed(2)} | score ${bestZone.score}${flip}`;
+  }
+  if (tp1)  document.getElementById('h-tp1').textContent  = `TP1 $${tp1.toFixed(2)}`;
+  if (tp2)  document.getElementById('h-tp2').textContent  = `TP2 $${tp2.toFixed(2)}`;
+  if (stop) document.getElementById('h-stop').textContent = `Stop $${stop.toFixed(2)}`;
+  if (stats) {
+    document.getElementById('h-wr').textContent =
+      `WR ${(stats.win_rate * 100).toFixed(0)}% (${stats.num_trades}T)`;
+  }
+  if (stats && stats.fundamental_score != null) {
+    document.getElementById('h-fscore').textContent =
+      `FA ${stats.fundamental_score}/100`;
+  }
+
+  // ── Colours ──
+  const C = {
+    bg: '#0d0d0d', text: '#c9d1d9', grid: '#161b22',
+    up: '#26a69a', dn: '#ef5350',
+    ema20: '#f0b429', ema50: '#a78bfa',
+    support: '#26a69a', resistance: '#ef5350', flipped: '#f0b429',
+    tp: '#39d353', stop: '#ef5350', entry: '#58a6ff',
+    rsi: '#58a6ff', rsiOb: '#ef5350', rsiOs: '#26a69a',
+    volume: 'rgba(120,120,120,0.25)',
+  };
+
+  const LS = LightweightCharts.LineStyle;
+
+  // ── Shared chart factory ──
+  function makeChart(el, height, opts = {}) {
+    return LightweightCharts.createChart(el, {
+      layout:     { background: { color: C.bg }, textColor: C.text },
+      grid:       { vertLines: { color: C.grid }, horzLines: { color: C.grid } },
+      crosshair:  { mode: LightweightCharts.CrosshairMode.Normal },
+      rightPriceScale: { borderColor: '#30363d' },
+      timeScale:  { borderColor: '#30363d', timeVisible: true },
+      handleScroll: true, handleScale: true,
+      height,
+      ...opts,
+    });
+  }
+
+  // v5 series constructors live on the LightweightCharts namespace
+  const { CandlestickSeries, LineSeries, HistogramSeries } = LightweightCharts;
+
+  // ── Main chart ──
+  const mainEl = document.getElementById('main-chart');
+  const mainChart = makeChart(mainEl, mainEl.clientHeight || 500);
+
+  // Candlesticks
+  const candleSeries = mainChart.addSeries(CandlestickSeries, {
+    upColor: C.up, downColor: C.dn,
+    borderUpColor: C.up, borderDownColor: C.dn,
+    wickUpColor: C.up, wickDownColor: C.dn,
+  });
+  candleSeries.setData(ohlcv);
+
+  // Volume (overlaid, bottom 20% of main pane)
+  const volSeries = mainChart.addSeries(HistogramSeries, {
+    priceFormat: { type: 'volume' },
+    priceScaleId: 'vol',
+  });
+  mainChart.priceScale('vol').applyOptions({
+    scaleMargins: { top: 0.82, bottom: 0 },
+    borderVisible: false,
+  });
+  volSeries.setData(volume);
+
+  // EMA lines
+  const ema20Series = mainChart.addSeries(LineSeries, {
+    color: C.ema20, lineWidth: 1,
+    priceLineVisible: false, lastValueVisible: false,
+    crosshairMarkerVisible: false,
+  });
+  ema20Series.setData(ema20);
+
+  const ema50Series = mainChart.addSeries(LineSeries, {
+    color: C.ema50, lineWidth: 1,
+    priceLineVisible: false, lastValueVisible: false,
+    crosshairMarkerVisible: false,
+  });
+  ema50Series.setData(ema50);
+
+  // ── S/R zone price lines ──
+  zones.forEach(z => {
+    const col = z.flipped ? C.flipped : (z.price < current_price ? C.support : C.resistance);
+    const label = `${z.timeframe} · ${z.touch_count}× · score ${z.score}${z.flipped ? ' ↔' : ''}`;
+    candleSeries.createPriceLine({
+      price: z.price, color: col, lineWidth: 1,
+      lineStyle: LS.Dashed, axisLabelVisible: true, title: label,
+    });
+  });
+
+  // TP / Stop price lines
+  if (tp1)  candleSeries.createPriceLine({ price: tp1,  color: C.tp,    lineWidth: 1, lineStyle: LS.Dashed,  axisLabelVisible: true, title: 'TP1' });
+  if (tp2)  candleSeries.createPriceLine({ price: tp2,  color: C.tp,    lineWidth: 1, lineStyle: LS.Dotted,  axisLabelVisible: true, title: 'TP2' });
+  if (stop) candleSeries.createPriceLine({ price: stop, color: C.stop,  lineWidth: 2, lineStyle: LS.Solid,   axisLabelVisible: true, title: 'Stop' });
+
+  // Open trade entry line
+  if (trade && trade.entry_price) {
+    const pnlStr = trade.pnl_pct != null
+      ? ` (${trade.pnl_pct >= 0 ? '+' : ''}${(trade.pnl_pct * 100).toFixed(1)}%)`
+      : '';
+    candleSeries.createPriceLine({
+      price: trade.entry_price, color: C.entry, lineWidth: 1,
+      lineStyle: LS.Dotted, axisLabelVisible: true,
+      title: `Entry${pnlStr}`,
+    });
+  }
+
+  // ── RSI chart ──
+  const rsiEl  = document.getElementById('rsi-chart');
+  const rsiChart = makeChart(rsiEl, 110, { timeScale: { visible: false } });
+
+  const rsiSeries = rsiChart.addSeries(LineSeries, {
+    color: C.rsi, lineWidth: 1,
+    priceLineVisible: false, lastValueVisible: true,
+  });
+  rsiSeries.setData(rsi);
+
+  // Overbought / oversold bands
+  if (rsi.length) {
+    const firstT = rsi[0].time;
+    const lastT  = rsi[rsi.length - 1].time;
+    [[70, C.rsiOb, 'OB'], [30, C.rsiOs, 'OS']].forEach(([level, col, title]) => {
+      rsiSeries.createPriceLine({ price: level, color: col, lineWidth: 1, lineStyle: LS.Dashed, title });
+    });
+  }
+
+  // RSI scale fixed 0–100
+  rsiChart.priceScale('right').applyOptions({ autoScale: false, minimum: 0, maximum: 100 });
+
+  // Default view: show the last 90 trading days; full history is scrollable
+  mainChart.timeScale().setVisibleLogicalRange({ from: ohlcv.length - 90, to: ohlcv.length - 1 });
+
+  // ── Sync time scales ──
+  mainChart.timeScale().subscribeVisibleLogicalRangeChange(range => {
+    if (range) rsiChart.timeScale().setVisibleLogicalRange(range);
+  });
+  rsiChart.timeScale().subscribeVisibleLogicalRangeChange(range => {
+    if (range) mainChart.timeScale().setVisibleLogicalRange(range);
+  });
+
+  // ── Resize observer ──
+  const ro = new ResizeObserver(() => {
+    mainChart.applyOptions({ height: mainEl.clientHeight });
+    rsiChart.applyOptions({ height: rsiEl.clientHeight });
+  });
+  ro.observe(mainEl);
+  ro.observe(rsiEl);
+
+  // ── Crosshair legend ──
+  mainChart.subscribeCrosshairMove(param => {
+    if (!param.time) return;
+    const c = param.seriesData.get(candleSeries);
+    if (c) {
+      const pnl = trade && trade.entry_price
+        ? ` | P&L ${((c.close - trade.entry_price) / trade.entry_price * 100).toFixed(2)}%`
+        : '';
+      document.getElementById('legend').innerHTML =
+        `<span>O ${c.open.toFixed(2)}</span><span>H ${c.high.toFixed(2)}</span>` +
+        `<span>L ${c.low.toFixed(2)}</span><span>C ${c.close.toFixed(2)}</span>${pnl}`;
+    }
+    const r = param.seriesData.get(rsiSeries);
+    if (r) {
+      document.getElementById('rsi-label').textContent = `RSI ${r.value.toFixed(1)}`;
+    }
+  });
+})();
+</script>
+</body>
+</html>
