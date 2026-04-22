@@ -1,18 +1,24 @@
 """tvscreener volume scan — returns list of tickers above volume threshold."""
 from __future__ import annotations
 
+import logging
+
 from tvscreener import StockScreener, StockField, Market
+
+log = logging.getLogger(__name__)
 
 
 def scan(config: dict) -> list[str]:
     """
     Query TradingView screener for US stocks meeting volume and price filters.
 
-    Relative volume uses TradingView's 10-day calculation (closest available to
-    the config's conceptual 20-day average threshold).
-
-    Returns up to config['scan']['max_results'] ticker symbols, sorted by
+    Returns up to config['scan']['max_results'] ticker symbols sorted by
     relative volume descending.
+
+    tvscreener 0.3.0 returns a DataFrame with columns:
+      Symbol | Price | Volume | Relative Volume | Average Volume (30 day) | ...
+    Symbol values are formatted as "EXCHANGE:TICKER" (e.g. "NYSE:BML/PG").
+    Preferred share slashes are converted to dashes for Yahoo Finance compatibility.
     """
     cfg = config["scan"]
     volume_multiplier: float = cfg["volume_multiplier"]
@@ -37,28 +43,28 @@ def scan(config: dict) -> list[str]:
     if df is None or df.empty:
         return []
 
-    # Debug: log actual structure so we can fix extraction if needed
-    import logging
-    log = logging.getLogger(__name__)
-    log.info("Screener columns: %s", df.columns.tolist())
-    log.info("Screener index sample: %s", df.index[:3].tolist())
-    log.info("Screener first row: %s", df.iloc[0].to_dict())
-
-    # Sort by relative volume descending and cap results
-    rel_vol_col = _find_col(df, ["relative_volume_10d_calc", "Relative Volume", "RELATIVE_VOLUME"])
+    # Sort by relative volume descending
+    rel_vol_col = _find_col(df, ["Relative Volume", "relative_volume_10d_calc", "RELATIVE_VOLUME"])
     if rel_vol_col:
         df = df.sort_values(rel_vol_col, ascending=False)
 
     df = df.head(max_results)
 
-    # Extract ticker symbols — try all known locations
-    for col in ("ticker", "name", "symbol", "Ticker", "Name", "Symbol"):
-        if col in df.columns:
-            tickers = df[col].tolist()
-            return [str(t).split(":")[-1] for t in tickers]
+    # Extract tickers from the Symbol column ("EXCHANGE:TICKER" format)
+    sym_col = _find_col(df, ["Symbol", "ticker", "name", "symbol", "Ticker", "Name"])
+    if sym_col:
+        raw = df[sym_col].tolist()
+    else:
+        raw = df.index.tolist()
 
-    # Fall back to index — strip exchange prefix if present (e.g. "NASDAQ:AAPL")
-    return [str(t).split(":")[-1] for t in df.index]
+    tickers = []
+    for t in raw:
+        t = str(t).split(":")[-1]   # strip exchange prefix
+        t = t.replace("/", "-")     # preferred shares: BML/PG → BML-PG
+        tickers.append(t)
+
+    log.info("  %d tickers from screener: %s", len(tickers), tickers[:10])
+    return tickers
 
 
 def _find_col(df, candidates: list[str]) -> str | None:
