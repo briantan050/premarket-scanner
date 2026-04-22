@@ -2,7 +2,8 @@ name: Premarket Scanner
 
 on:
   schedule:
-    - cron: "30 13 * * 1-5"  # 8:30am ET weekdays
+    - cron: "30 12 * * 1-5"  # 8:30am EDT (Mar–Nov, UTC-4)
+    - cron: "30 13 * * 1-5"  # 8:30am EST (Nov–Mar, UTC-5)
   workflow_dispatch:
     inputs:
       ticker:
