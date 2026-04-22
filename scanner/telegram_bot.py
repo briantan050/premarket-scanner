@@ -40,8 +40,11 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 def _cfg() -> dict:
+    import re
     with open("config.yaml") as f:
-        return yaml.safe_load(f)
+        raw = f.read()
+    raw = re.sub(r"\$\{(\w+)\}", lambda m: os.environ.get(m.group(1), ""), raw)
+    return yaml.safe_load(raw)
 
 
 def _bot_token() -> str:
