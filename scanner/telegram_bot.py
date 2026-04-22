@@ -13,6 +13,12 @@ Button callback data format:
   backtest_TICKER        → run backtest, reply with stats
   view_trades            → read Google Sheet, reply with table
   close_TICKER           → mark ticker closed in Google Sheet
+  scan_ticker_prompt     → ask user to type a ticker
+
+Commands (registered in Telegram menu):
+  /menu    → show action button panel
+  /trades  → view open positions
+  /start   → greeting
 """
 from __future__ import annotations
 
@@ -24,13 +30,15 @@ from datetime import datetime, timezone
 
 import requests
 import yaml
-from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import Bot, BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
+    MessageHandler,
+    filters,
 )
 
 logger = logging.getLogger(__name__)
@@ -210,18 +218,98 @@ def _gh_dispatch(workflow_file: str, ticker: str | None = None) -> bool:
     return resp.status_code == 204
 
 
+# ---------------------------------------------------------------------------
+# Command handlers (A, C, D)
+# ---------------------------------------------------------------------------
+
+async def _handle_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await update.message.reply_text(
+        "Premarket scanner bot 📈\n"
+        "Alerts are sent automatically each morning at 8:30am ET.\n\n"
+        "Use /menu to scan on demand or view your trades."
+    )
+
+
+async def _handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Option A — send a button panel the user can tap any time."""
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🔍 Scan All",       callback_data="refresh_all"),
+            InlineKeyboardButton("📋 View Trades",    callback_data="view_trades"),
+        ],
+        [InlineKeyboardButton("📈 Scan Ticker...",    callback_data="scan_ticker_prompt")],
+    ])
+    await update.message.reply_text("What would you like to do?", reply_markup=keyboard)
+
+
+async def _handle_trades(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Option C — /trades command, available any time without a prior alert."""
+    try:
+        from scanner import sheets
+        trades = sheets.get_open_trades(_cfg())
+        if not trades:
+            await update.message.reply_text("📋 No open trades found.")
+            return
+        lines = ["📋 *Open Trades*\n"]
+        for t in trades:
+            pnl = t.get("pnl_pct")
+            pnl_str = f" ({pnl:+.1%})" if pnl is not None else ""
+            lines.append(
+                f"• *{t['ticker']}* — {t['shares']} @ ${t['entry_price']:.2f} "
+                f"(day {t['days_held']}){pnl_str}"
+            )
+        await update.message.reply_text(
+            "\n".join(lines), parse_mode=ParseMode.MARKDOWN
+        )
+    except Exception as exc:
+        await update.message.reply_text(f"❌ Could not load trades: {exc}")
+
+
+async def _handle_ticker_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Receive a ticker symbol after the user tapped 'Scan Ticker...'."""
+    if not context.user_data.get("awaiting_ticker"):
+        return  # ignore all other text messages
+
+    ticker = update.message.text.strip().upper()
+    if not ticker.isalpha() or len(ticker) > 5:
+        await update.message.reply_text(
+            "That doesn't look like a valid ticker. Try again (e.g. AAPL)."
+        )
+        return
+
+    context.user_data["awaiting_ticker"] = False
+    ok = _gh_dispatch("scanner.yml", ticker=ticker)
+    msg = (
+        f"🔄 Scanning *{ticker}*... results in ~2 min."
+        if ok else
+        f"❌ Could not trigger scan for {ticker}. Check GITHUB_TOKEN."
+    )
+    await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
+
+
+# ---------------------------------------------------------------------------
+# Callback handler
+# ---------------------------------------------------------------------------
+
 async def _handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
 
-    data    = query.data or ""
-    cfg     = _cfg()
-    chat_id = str(query.message.chat_id)
+    data = query.data or ""
+    cfg  = _cfg()
+
+    # ── Scan ticker prompt (from /menu) ──
+    if data == "scan_ticker_prompt":
+        context.user_data["awaiting_ticker"] = True
+        await query.edit_message_text(
+            "Send me a ticker symbol (e.g. AAPL, NVDA, MSFT)."
+        )
+        return
 
     # ── Refresh full scan ──
     if data == "refresh_all":
-        cooldown = cfg["alerts"]["cooldown_minutes"] * 60
-        last     = _last_refresh.get("all", 0)
+        cooldown  = cfg["alerts"]["cooldown_minutes"] * 60
+        last      = _last_refresh.get("all", 0)
         remaining = cooldown - (time.time() - last)
         if remaining > 0:
             await query.edit_message_text(
@@ -240,8 +328,8 @@ async def _handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     if data.startswith("refresh_"):
         ticker = data[len("refresh_"):]
         ok = _gh_dispatch("scanner.yml", ticker=ticker)
-        msg = f"🔄 Refreshing {ticker}..." if ok else f"❌ Could not trigger workflow for {ticker}."
-        await query.edit_message_text(msg)
+        msg = f"🔄 Refreshing *{ticker}*..." if ok else f"❌ Could not trigger workflow for {ticker}."
+        await query.edit_message_text(msg, parse_mode=ParseMode.MARKDOWN)
         return
 
     # ── Backtest ──
@@ -251,7 +339,6 @@ async def _handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         try:
             from scanner import support_resistance as sr, backtest as bt_module
             import yfinance as yf
-            price = float(yf.Ticker(ticker).fast_info["last_price"])
             zones = sr.get_levels(ticker, cfg)
             stats = bt_module.run_backtest(ticker, zones, cfg)
             reply = (
@@ -294,7 +381,11 @@ async def _handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         try:
             from scanner import sheets
             updated = sheets.mark_closed(ticker, cfg)
-            msg = f"✅ {ticker} marked as closed." if updated else f"⚠️ No open position found for {ticker}."
+            msg = (
+                f"✅ {ticker} marked as closed."
+                if updated else
+                f"⚠️ No open position found for {ticker}."
+            )
         except Exception as exc:
             msg = f"❌ Could not update sheet: {exc}"
         await query.edit_message_text(msg)
@@ -303,11 +394,17 @@ async def _handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     await query.edit_message_text(f"Unknown action: {data}")
 
 
-async def _handle_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_text(
-        "Premarket scanner bot 📈\n"
-        "Alerts are sent automatically each morning at 8:30am ET."
-    )
+# ---------------------------------------------------------------------------
+# Webhook runner
+# ---------------------------------------------------------------------------
+
+async def _post_init(app: Application) -> None:
+    """Option D — register commands so they appear in Telegram's menu button."""
+    await app.bot.set_my_commands([
+        BotCommand("menu",   "Scan on demand / view trades"),
+        BotCommand("trades", "View open positions"),
+        BotCommand("start",  "About this bot"),
+    ])
 
 
 def run_webhook(
@@ -325,10 +422,15 @@ def run_webhook(
     app = (
         Application.builder()
         .token(token)
+        .post_init(_post_init)
         .build()
     )
-    app.add_handler(CommandHandler("start", _handle_start))
+
+    app.add_handler(CommandHandler("start",  _handle_start))
+    app.add_handler(CommandHandler("menu",   _handle_menu))
+    app.add_handler(CommandHandler("trades", _handle_trades))
     app.add_handler(CallbackQueryHandler(_handle_callback))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, _handle_ticker_text))
 
     full_url = webhook_url.rstrip("/") + path
     logger.info("Starting webhook on %s (port %d)", full_url, port)
