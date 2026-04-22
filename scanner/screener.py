@@ -37,6 +37,13 @@ def scan(config: dict) -> list[str]:
     if df is None or df.empty:
         return []
 
+    # Debug: log actual structure so we can fix extraction if needed
+    import logging
+    log = logging.getLogger(__name__)
+    log.info("Screener columns: %s", df.columns.tolist())
+    log.info("Screener index sample: %s", df.index[:3].tolist())
+    log.info("Screener first row: %s", df.iloc[0].to_dict())
+
     # Sort by relative volume descending and cap results
     rel_vol_col = _find_col(df, ["relative_volume_10d_calc", "Relative Volume", "RELATIVE_VOLUME"])
     if rel_vol_col:
@@ -44,10 +51,14 @@ def scan(config: dict) -> list[str]:
 
     df = df.head(max_results)
 
-    # Extract ticker symbols — tvscreener puts them in the index or a 'ticker' column
-    if "ticker" in df.columns:
-        return df["ticker"].tolist()
-    return [str(t).split(":")[1] if ":" in str(t) else str(t) for t in df.index]
+    # Extract ticker symbols — try all known locations
+    for col in ("ticker", "name", "symbol", "Ticker", "Name", "Symbol"):
+        if col in df.columns:
+            tickers = df[col].tolist()
+            return [str(t).split(":")[-1] for t in tickers]
+
+    # Fall back to index — strip exchange prefix if present (e.g. "NASDAQ:AAPL")
+    return [str(t).split(":")[-1] for t in df.index]
 
 
 def _find_col(df, candidates: list[str]) -> str | None:
