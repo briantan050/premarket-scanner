@@ -43,6 +43,23 @@ def scan(config: dict) -> list[str]:
     if df is None or df.empty:
         return []
 
+    # ── Volume quality filters (applied to TradingView data before any yfinance calls) ──
+    min_avg_vol    = cfg.get("min_avg_volume", 500_000)
+    min_dollar_vol = cfg.get("min_dollar_volume", 5_000_000)
+
+    avg_vol_col = _find_col(df, ["Average Volume (30 day)", "average_volume_30d_calc"])
+    price_col   = _find_col(df, ["Price", "price", "close"])
+
+    if avg_vol_col:
+        df = df[df[avg_vol_col] >= min_avg_vol]
+
+    if avg_vol_col and price_col:
+        dollar_vol = df[price_col] * df[avg_vol_col]
+        df = df[dollar_vol >= min_dollar_vol]
+
+    if df.empty:
+        return []
+
     # Sort by relative volume descending
     rel_vol_col = _find_col(df, ["Relative Volume", "relative_volume_10d_calc", "RELATIVE_VOLUME"])
     if rel_vol_col:

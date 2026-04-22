@@ -141,9 +141,15 @@ def run(ticker: str | None = None) -> None:
 
             # Volume ratio (relative volume vs 30d avg)
             hist = yf.Ticker(t).history(period="35d")
-            vol_ratio = round(
-                float(hist["Volume"].iloc[-1]) / float(hist["Volume"].iloc[:-1].mean()), 2
-            ) if len(hist) > 1 else None
+            avg_vol = float(hist["Volume"].iloc[:-1].mean()) if len(hist) > 1 else 0
+            today_vol = float(hist["Volume"].iloc[-1]) if len(hist) > 0 else 0
+            vol_ratio = round(today_vol / avg_vol, 2) if avg_vol > 0 else None
+
+            min_vol_ratio = config["scan"].get("min_vol_ratio", 1.5)
+            if vol_ratio is not None and vol_ratio < min_vol_ratio:
+                log.info("  %-6s skipped — vol ratio %.1fx below threshold (%.1fx)",
+                         t, vol_ratio, min_vol_ratio)
+                continue
 
             final.append({
                 "ticker":            t,

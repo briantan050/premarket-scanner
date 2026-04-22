@@ -2,6 +2,9 @@ scan:
   volume_multiplier: 2.0
   min_price: 10.00
   max_results: 50
+  min_avg_volume: 500000      # minimum 30-day avg daily volume (shares)
+  min_dollar_volume: 5000000  # minimum avg daily dollar volume (price × avg vol)
+  min_vol_ratio: 1.5          # skip if today's volume is below 1.5× the 30d avg
 
 support_resistance:
   min_touches: 3
